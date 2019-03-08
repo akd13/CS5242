@@ -181,17 +181,13 @@ class conv(operation):
         in_channel = self.conv_params['in_channel'] # rgb
         out_channel = self.conv_params['out_channel'] # number of filters
         
-        output=None
+        output = None
+        
         #########################################  
         batch,in_height,in_width = input.shape[0],input.shape[2],input.shape[3]
-        
-        out_height = int(np.floor(np.floor((in_height+pad-kernel_h)/stride))+1)
-        out_width = int(np.floor(np.floor((in_width+pad-kernel_w)/stride))+1)
-#         print("out height and out width",out_height,out_width)
-        left_pad = int(np.floor((pad+1)/2))
-        right_pad = int(np.floor(pad/2))
-        
-        input_new = np.pad(input, ((0, 0), (0, 0), (left_pad, right_pad), (left_pad, right_pad)), mode='constant')
+        out_height = int(np.floor((in_height+2*pad-kernel_h)/stride)+1)
+        out_width = int(np.floor((in_width+2*pad-kernel_w)/stride)+1)
+        input_new = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
         in_height,in_width = input_new.shape[2],input_new.shape[3]
         
         h_indices = np.arange(0,in_height-kernel_h+1,stride) # the height indices for receptive fields
@@ -219,53 +215,37 @@ class conv(operation):
             w_grad: gradient to weights, with same shape as weights
             b_bias: gradient to bias, with same shape as bias
         """
+        
         kernel_h = self.conv_params['kernel_h']  # height of kernel
         kernel_w = self.conv_params['kernel_w']  # width of kernel
         pad = self.conv_params['pad']
         stride = self.conv_params['stride']
         in_channel = self.conv_params['in_channel']
         out_channel = self.conv_params['out_channel']
-
-        in_grad = None
-        w_grad = None
-        b_grad = None
-
-        #########################################
-        b_grad = np.sum(out_grad, axis=(0, 2, 3))
         
-#         p = pad
-#         h_out = 1 + int((input[0, 0].shape[0] + 2*p - kernel_h) / stride)
-#         w_out = 1 + int((input[0, 0].shape[1] + 2*p - kernel_w) / stride)
+        #########################################
+        #initialize shapes for in_grad, w_grad
+        in_grad = np.zeros(input.shape)
+        w_grad = np.zeros(weights.shape)
+        
+        batch,in_height,in_width = input.shape[0],input.shape[2],input.shape[3]
+        out_height = int(np.floor((in_height+2*pad-kernel_h)/stride)+1)
+        out_width = int(np.floor((in_width+2*pad-kernel_w)/stride)+1)
+        input_new = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
+        in_height,in_width = input_new.shape[2],input_new.shape[3]
+        
+        for i in range(out_height):
+            for j in range(out_width):
+                input_new_masked = input_new[:, :, i * stride:i * stride + kernel_h,
+                               j * stride:j * stride + kernel_w]
+                for k in range(out_channel):
+                    w_grad[k, :, :, :] += np.sum(input_new_masked * (out_grad[:, k, i, j])[:, None, None, None], axis=0)
+                for n in range(batch):
+                    in_grad[n, :, i * stride:i * stride + kernel_h,
+                    j * stride:j * stride + kernel_w] += np.sum(
+                        (weights[:, :, :, :] * (out_grad[n, :, i, j])[:, None, None, None]), axis=0)
+        b_grad = np.sum(out_grad, axis=(0, 2, 3))
 
-#         x_padded = np.pad(input, ((0, 0), (0, 0), (p, p), (p, p)), mode='constant')
-
-#         N, C, H, W = input.shape
-#         i0 = np.repeat(np.arange(kernel_h), kernel_w)
-#         i0 = np.tile(i0, C)
-#         i1 = stride * np.repeat(np.arange(h_out), w_out)
-#         j0 = np.tile(np.arange(kernel_h), kernel_w * C)
-#         j1 = stride * np.tile(np.arange(h_out), w_out)
-#         i = i0.reshape(-1, 1) + i1.reshape(1, -1)
-#         j = j0.reshape(-1, 1) + j1.reshape(1, -1)
-
-#         k = np.repeat(np.arange(C), kernel_h * kernel_w).reshape(-1, 1)
-
-#         X_col = x_padded[:, k, i, j]
-#         X_col = X_col.transpose(1, 2, 0).reshape(kernel_h * kernel_w * C, -1)
-
-#         in_grad_reshaped = in_grad.transpose(1, 2, 3, 0).reshape(out_channel, -1)
-#         w_grad = in_grad_reshaped.dot(X_col.T).reshape(weights.shape)
-
-#         dx_cols = weights.reshape(out_channel, -1).T.dot(in_grad_reshaped)
-#         # revert to image
-#         H_padded, W_padded = H + 2 * p, W + 2 * p
-#         x_padded_new = np.zeros((N, C, H_padded, W_padded), dtype=dx_cols.dtype)
-#         cols_reshaped = dx_cols.reshape(C * kernel_h * kernel_w, -1, N).transpose(2, 0, 1)
-#         np.add.at(x_padded_new, (slice(None), k, i, j), cols_reshaped)
-#         if p == 0:
-#             out_grad = x_padded_new
-#         else:
-#             out_grad = x_padded_new[:, :, p:-p, p:-p]
         #########################################
 
         return in_grad, w_grad, b_grad
