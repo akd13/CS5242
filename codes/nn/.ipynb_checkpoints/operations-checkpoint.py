@@ -233,17 +233,18 @@ class conv(operation):
         
         batch,in_height,in_width = input.shape[0],input.shape[2],input.shape[3]
         out_height,out_width = out_grad.shape[2],out_grad.shape[3]
+        out_height = int(np.floor((in_height+2*pad-kernel_h)/stride)+1)
+        out_width = int(np.floor((in_width+2*pad-kernel_w)/stride)+1)
         input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
         in_height,in_width = input_pad.shape[2],input_pad.shape[3]
 
         # calculate w_grad, i.e. dW          
-        h_indices_dW = np.arange(0,in_height-kernel_h,stride) # the height indices for receptive fields
-        w_indices_dW = np.arange(0,in_width-kernel_w,stride) # the width indices for receptive fields
+        h_indices_dW = np.arange(0,in_height-kernel_h+1,stride) # the height indices for receptive fields
+        w_indices_dW = np.arange(0,in_width-kernel_w+1,stride) # the width indices for receptive fields
         
         for b in range(batch):
             cur_input = input_pad[b].reshape(1,in_channel,in_height, in_width)
             cur_out = out_grad[b].reshape(out_channel, out_height*out_width)   
-#             cur_out = cur_out.reshape(out_channel, out_height*out_width)    
             transformed_input = img2col(cur_input,h_indices_dW,w_indices_dW,kernel_h,kernel_w)
             shape_1,shape_2 = transformed_input.shape[1],transformed_input.shape[2]
             transformed_input = transformed_input.reshape(in_channel*kernel_h*kernel_w,out_height*out_width)
