@@ -1,5 +1,6 @@
 import numpy as np
 from utils.tools import img2col
+from itertools import product
 
 # Attension:
 # - Never change the value of input, which will change the result of backward
@@ -187,13 +188,13 @@ class conv(operation):
         batch,in_height,in_width = input.shape[0],input.shape[2],input.shape[3]
         out_height = int(np.floor((in_height+2*pad-kernel_h)/stride)+1)
         out_width = int(np.floor((in_width+2*pad-kernel_w)/stride)+1)
-        input_new = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
-        in_height,in_width = input_new.shape[2],input_new.shape[3]
+        input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
+        in_height,in_width = input_pad.shape[2],input_pad.shape[3]
         
         h_indices = np.arange(0,in_height-kernel_h+1,stride) # the height indices for receptive fields
         w_indices = np.arange(0,in_width-kernel_w+1,stride) # the width indices for receptive fields
         
-        receptive_fields = img2col(input_new,h_indices,w_indices,kernel_h, kernel_w) # get all receptive fields in batch
+        receptive_fields = img2col(input_pad,h_indices,w_indices,kernel_h, kernel_w) # get all receptive fields in batch
         kernel_matrix = np.reshape(weights,(out_channel,in_channel*kernel_h*kernel_w)) 
         bias_reshape = np.repeat(bias, out_height*out_width,axis=0).reshape(out_channel,out_height*out_width)        
         output = np.vstack(list(map(lambda x: np.matmul(kernel_matrix,x)+bias_reshape, receptive_fields)))    
@@ -215,6 +216,8 @@ class conv(operation):
             w_grad: gradient to weights, with same shape as weights
             b_bias: gradient to bias, with same shape as bias
         """
+
+        #refer: https://becominghuman.ai/back-propagation-in-convolutional-neural-networks-intuition-and-code-714ef1c38199
         
         kernel_h = self.conv_params['kernel_h']  # height of kernel
         kernel_w = self.conv_params['kernel_w']  # width of kernel
@@ -229,21 +232,52 @@ class conv(operation):
         w_grad = np.zeros(weights.shape)
         
         batch,in_height,in_width = input.shape[0],input.shape[2],input.shape[3]
-        out_height = int(np.floor((in_height+2*pad-kernel_h)/stride)+1)
-        out_width = int(np.floor((in_width+2*pad-kernel_w)/stride)+1)
-        input_new = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
-        in_height,in_width = input_new.shape[2],input_new.shape[3]
+        out_height,out_width = out_grad.shape[2],out_grad.shape[3]
+        input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
+        in_height,in_width = input_pad.shape[2],input_pad.shape[3]
         
-        for i in range(out_height):
-            for j in range(out_width):
-                input_new_masked = input_new[:, :, i * stride:i * stride + kernel_h,
-                               j * stride:j * stride + kernel_w]
-                for k in range(out_channel):
-                    w_grad[k, :, :, :] += np.sum(input_new_masked * (out_grad[:, k, i, j])[:, None, None, None], axis=0)
-                for n in range(batch):
-                    in_grad[n, :, i * stride:i * stride + kernel_h,
-                    j * stride:j * stride + kernel_w] += np.sum(
-                        (weights[:, :, :, :] * (out_grad[n, :, i, j])[:, None, None, None]), axis=0)
+        h_indices = np.arange(0,kernel_h) # the height indices for weight
+        w_indices = np.arange(0,kernel_w) # the width indices for weight
+        weight_matrix = img2col(weights,h_indices,w_indices,1, 1).reshape(out_channel,in_channel*kernel_h*kernel_w) # get all fields for weight 
+#         print("weight shape",weight_matrix.shape)
+        for i in range(batch):
+            input_matrix = np.zeros((in_channel * kernel_w * kernel_h, out_height * out_width))
+
+            #for each image, extract the derivative for backward pass
+            for j in range(out_height):
+                for k in range(out_width):
+                    for l in range(in_channel):
+                        for m in range(kernel_h):
+                            for n in range(kernel_w):
+                                input_matrix[
+                                    l * kernel_w * kernel_h + m * kernel_w + n,
+                                    j * out_width + k] = input_pad[i][l, j * stride + m, k * stride + n]
+            
+            # find gradient weights for each sub-map for image, 
+            dW_temp = np.zeros((out_channel, out_height * out_width))
+            for j in range(out_height):
+                for k in range(out_width):
+                    dW_temp[:, j * out_width + k] = out_grad[i, :, j, k]
+
+            # do col2img using loops, calculate dL/dW = dL/dY*X.T
+            w_grad_temp = np.matmul(dW_temp, input_matrix.T)
+            for in_c in range(in_channel):
+                for j in range(kernel_h):
+                    for k in range(kernel_w):
+                        w_grad[:, in_c, j, k] += w_grad_temp[:, in_c * kernel_w * kernel_h + j * kernel_w + k]
+
+            # Calculate input gradient to forward layer, dL/dX = W.T*dL/dY
+            W = np.matmul(weight_matrix.T, dW_temp)
+            for j in range(out_height):
+                for k in range(out_width):
+                    for l in range(in_channel):
+                        for m in range(kernel_h):
+                            for n in range(kernel_w):
+                                in_grad[i, l, j * stride + m, k * stride + n] += \
+                                    W[
+                                        l * kernel_w * kernel_h + m * kernel_w + n,
+                                        j * out_width + k]
+
         b_grad = np.sum(out_grad, axis=(0, 2, 3))
 
         #########################################
@@ -282,17 +316,37 @@ class pool(operation):
         output = None
 
         #########################################
-        # code here
-        if pool_type == 'max':
-            output = None
-        elif pool_type == 'avg':
-            output = None
-        else:
-            raise ValueError('Doesn\'t support \'%s\' pooling.' %
-                             pool_type)
-        #########################################
-        return output
+        
+        batch,in_channel,in_height,in_width = input.shape
+        out_height = int(np.floor((in_height+2*pad-pool_height)/stride)+1)
+        out_width = int(np.floor((in_width+2*pad-pool_width)/stride)+1)
+        input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
+        in_height,in_width = input_pad.shape[2],input_pad.shape[3]
+    
+        output = np.zeros((batch, in_channel, out_height, out_width))
 
+        h_indices = np.arange(0,in_height-pool_height+1,stride) # the height indices for receptive fields
+        w_indices = np.arange(0,in_width-pool_width+1,stride) # the width indices for receptive fields
+        
+        receptive_fields = img2col(input_pad,h_indices,w_indices,pool_height, pool_width) # get all receptive fields in batch
+        
+        for b in range(batch):
+            current_image = receptive_fields[b]
+            batch_pool = []
+            sliced_list = list(map(lambda cur,c: cur[c*pool_height*pool_width:(c+1)*pool_height*pool_width,],[current_image]*in_channel,range(in_channel)))
+            if(pool_type == 'max'):
+                batch_pool = list(map(lambda sliced:sliced[np.argmax(sliced, axis=0), range(np.argmax(sliced, axis=0).size)].reshape(1,out_height*out_width),sliced_list))
+            elif(pool_type == 'avg'):
+                batch_pool = list(map(lambda sliced:np.mean(sliced,axis=0).reshape(1,out_height*out_width),sliced_list))
+            else:
+                raise ValueError('Doesn\'t support \'%s\' pooling.' %
+                             pool_type)
+            output[b] = np.vstack(tuple(batch_pool)).reshape(in_channel,out_height,out_width)
+        
+        #########################################
+        
+        return output
+    
     def backward(self, out_grad, input):
         """
         # Arguments
@@ -302,20 +356,39 @@ class pool(operation):
         # Returns
             in_grad: gradient to the forward input of pool layer, with same shape as input
         """
+        #refer: https://lanstonchu.wordpress.com/2018/09/01/convolutional-neural-network-cnn-backward-propagation-of-the-pooling-layers/
         pool_type = self.pool_params['pool_type']
         pool_height = self.pool_params['pool_height']
         pool_width = self.pool_params['pool_width']
         stride = self.pool_params['stride']
         pad = self.pool_params['pad']
 
-        in_grad = None
-
-        #########################################
-        # code here
+        batch,in_channel,in_height,in_width = input.shape
+        out_height = int(np.floor((in_height+2*pad-pool_height)/stride)+1)
+        out_width = int(np.floor((in_width+2*pad-pool_width)/stride)+1)        
+        input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
+        in_height,in_width = input_pad.shape[2],input_pad.shape[3]
+        
+        in_grad = np.zeros((batch, in_channel, in_height, in_width))
+        for b in range(batch):
+            current_image = input_pad[b]
+            for c in range(in_channel):
+                for h in range(out_height):
+                    for w in range(out_width):
+                        temp_slice = current_image[c, h*stride: h*stride+pool_height, w*stride: w*stride+pool_width]
+                        if(pool_type=='max'):
+                            max_out = np.zeros(temp_slice.shape)
+                            max_out[np.unravel_index(np.argmax(temp_slice, axis=None), temp_slice.shape)]=1
+                            in_grad[b,c,h*stride:h*stride+pool_height,w*stride:w*stride+pool_width]+=max_out*out_grad[b,c,h,w]
+                        elif(pool_type=='avg'):
+                            avg_out = np.ones(temp_slice.shape)*(1/(pool_height*pool_width))
+                            in_grad[b,c,h*stride:h*stride+pool_height,w*stride:w*stride+pool_width]+=avg_out*out_grad[b,c,h,w]
+                        else:
+                            raise ValueError('Doesn\'t support \'%s\' pooling.' %
+                             pool_type)
         #########################################
 
         return in_grad
-
 
 class dropout(operation):
     def __init__(self, rate, training=True, seed=None):
@@ -344,7 +417,10 @@ class dropout(operation):
             np.random.seed(self.seed)
             p = np.random.random_sample(input.shape)
             #########################################
-            # code here
+            if self.mask is None:
+                self.mask = np.random.binomial(1,self.rate,input.shape)
+            input*=self.mask
+            output = input/(1-self.rate)
             #########################################
         else:
             output = input
@@ -363,7 +439,7 @@ class dropout(operation):
         if self.training:
             #########################################
             # code here
-            in_grad = None
+            in_grad = (out_grad*self.mask)/(1-self.rate)
             #########################################
         else:
             in_grad = out_grad
