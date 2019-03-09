@@ -1,6 +1,5 @@
 import numpy as np
 from utils.tools import img2col
-from itertools import product
 
 # Attension:
 # - Never change the value of input, which will change the result of backward
@@ -228,6 +227,7 @@ class conv(operation):
         
         #########################################
         #initialize shapes for in_grad, w_grad
+        
         in_grad = np.zeros(input.shape)
         w_grad = np.zeros(weights.shape)
         
@@ -235,49 +235,35 @@ class conv(operation):
         out_height,out_width = out_grad.shape[2],out_grad.shape[3]
         input_pad = np.pad(input, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant')
         in_height,in_width = input_pad.shape[2],input_pad.shape[3]
+
+        # calculate w_grad, i.e. dW          
+        h_indices_dW = np.arange(0,in_height-kernel_h,stride) # the height indices for receptive fields
+        w_indices_dW = np.arange(0,in_width-kernel_w,stride) # the width indices for receptive fields
         
-        h_indices = np.arange(0,kernel_h) # the height indices for weight
-        w_indices = np.arange(0,kernel_w) # the width indices for weight
-        weight_matrix = img2col(weights,h_indices,w_indices,1, 1).reshape(out_channel,in_channel*kernel_h*kernel_w) # get all fields for weight 
-#         print("weight shape",weight_matrix.shape)
-        for i in range(batch):
-            input_matrix = np.zeros((in_channel * kernel_w * kernel_h, out_height * out_width))
-
-            #for each image, extract the derivative for backward pass
-            for j in range(out_height):
-                for k in range(out_width):
-                    for l in range(in_channel):
-                        for m in range(kernel_h):
-                            for n in range(kernel_w):
-                                input_matrix[
-                                    l * kernel_w * kernel_h + m * kernel_w + n,
-                                    j * out_width + k] = input_pad[i][l, j * stride + m, k * stride + n]
+        for b in range(batch):
+            cur_input = input_pad[b].reshape(1,in_channel,in_height, in_width)
+            cur_out = out_grad[b].reshape(out_channel, out_height*out_width)   
+#             cur_out = cur_out.reshape(out_channel, out_height*out_width)    
+            transformed_input = img2col(cur_input,h_indices_dW,w_indices_dW,kernel_h,kernel_w)
+            shape_1,shape_2 = transformed_input.shape[1],transformed_input.shape[2]
+            transformed_input = transformed_input.reshape(in_channel*kernel_h*kernel_w,out_height*out_width)
+            temp_product = np.matmul(cur_out,transformed_input.T).reshape(out_channel, in_channel, kernel_h, kernel_w)   
+            w_grad+=temp_product.reshape(out_channel, in_channel, kernel_h, kernel_w)   
+        
+        # Calculate input gradient to forward layer, dX = W.T*dL/dY 
+        weight_matrix = np.reshape(weights,(out_channel,in_channel*kernel_h*kernel_w))
+        
+        for b in range(batch):                
+            cur_out = out_grad[b].reshape(out_channel,out_height*out_width)
+            col2img_input = np.matmul(weight_matrix.T,cur_out) 
             
-            # find gradient weights for each sub-map for image, 
-            dW_temp = np.zeros((out_channel, out_height * out_width))
-            for j in range(out_height):
-                for k in range(out_width):
-                    dW_temp[:, j * out_width + k] = out_grad[i, :, j, k]
-
-            # do col2img using loops, calculate dL/dW = dL/dY*X.T
-            w_grad_temp = np.matmul(dW_temp, input_matrix.T)
-            for in_c in range(in_channel):
-                for j in range(kernel_h):
-                    for k in range(kernel_w):
-                        w_grad[:, in_c, j, k] += w_grad_temp[:, in_c * kernel_w * kernel_h + j * kernel_w + k]
-
-            # Calculate input gradient to forward layer, dL/dX = W.T*dL/dY
-            W = np.matmul(weight_matrix.T, dW_temp)
-            for j in range(out_height):
-                for k in range(out_width):
-                    for l in range(in_channel):
-                        for m in range(kernel_h):
-                            for n in range(kernel_w):
-                                in_grad[i, l, j * stride + m, k * stride + n] += \
-                                    W[
-                                        l * kernel_w * kernel_h + m * kernel_w + n,
-                                        j * out_width + k]
-
+            #convert from column to image
+            for h in range(out_height):
+                for w in range(out_width):
+                    for c in range(in_channel):
+                        for kh in range(kernel_h):
+                            for kw in range(kernel_w):
+                                in_grad[b,c,h*stride+kh,w*stride+kw]+=col2img_input[c*kernel_h*kernel_w+kh*kernel_w+kw,h*out_width+w]
         b_grad = np.sum(out_grad, axis=(0, 2, 3))
 
         #########################################
@@ -356,7 +342,9 @@ class pool(operation):
         # Returns
             in_grad: gradient to the forward input of pool layer, with same shape as input
         """
-        #refer: https://lanstonchu.wordpress.com/2018/09/01/convolutional-neural-network-cnn-backward-propagation-of-the-pooling-layers/
+        
+        # refer: https://lanstonchu.wordpress.com/2018/09/01/convolutional-neural-network-cnn-backward-propagation-of-the-pooling-layers/
+        # due to sparse/repeated entries during matrix multiplication for max/avg pooling, we use loops and slicing instead.
         pool_type = self.pool_params['pool_type']
         pool_height = self.pool_params['pool_height']
         pool_width = self.pool_params['pool_width']
@@ -370,6 +358,7 @@ class pool(operation):
         in_height,in_width = input_pad.shape[2],input_pad.shape[3]
         
         in_grad = np.zeros((batch, in_channel, in_height, in_width))
+        
         for b in range(batch):
             current_image = input_pad[b]
             for c in range(in_channel):
